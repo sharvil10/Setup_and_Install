@@ -118,11 +118,39 @@ RUN wget -nv -O /tmp/main.zip https://github.com/HabanaAI/hccl_ofi_wrapper/archi
     cd / && \
     rm -rf /tmp/main.zip /tmp/hccl_ofi_wrapper-main
 
-RUN python3.10 -m pip install pip==23.3.1 setuptools==67.3.3 wheel==0.38.4
+ENV APP_ROOT=/opt/app-root
+
+COPY generate_ssh_host_keys.sh ${APP_ROOT}/generate_ssh_host_keys.sh
+
+RUN chmod +x ${APP_ROOT}/generate_ssh_host_keys.sh && \
+    echo '${APP_ROOT}/generate_ssh_host_keys.sh' >> ${APP_ROOT}/startup.sh && \
+    echo 'source ${APP_ROOT}/bin/activate' >> ${APP_ROOT}/startup.sh && \
+    chmod +x ${APP_ROOT}/startup.sh && \
+    echo "#!/bin/bash" > /usr/local/bin/dockerd-entrypoint.sh && \
+    echo "set -e" >> /usr/local/bin/dockerd-entrypoint.sh && \
+    echo "set -a" >> /usr/local/bin/dockerd-entrypoint.sh && \
+    echo '${APP_ROOT}/startup.sh' >> /usr/local/bin/dockerd-entrypoint.sh && \
+    echo 'set +a' >> /usr/local/bin/dockerd-entrypoint.sh && \
+    echo '"$@"' >> /usr/local/bin/dockerd-entrypoint.sh && \
+    chmod +x /usr/local/bin/dockerd-entrypoint.sh && \
+    echo 'source ${APP_ROOT}/startup.sh' >> ${HOME}/.bashrc
+
+RUN python3.10 -m venv ${APP_ROOT} && \
+     source ${APP_ROOT}/bin/activate && \
+     python -m pip install pip==23.3.1 setuptools==67.3.3 wheel==0.38.4 && \
+     echo "unset BASH_ENV PROMPT_COMMAND ENV" >> ${APP_ROOT}/bin/activate
+
+# For RHEL/Centos 8+ scl_enable isn't sourced automatically in s2i-core
+# so virtualenv needs to be activated this way
+ENV BASH_ENV="${APP_ROOT}/bin/activate" \
+    ENV="${APP_ROOT}/bin/activate" \
+    PROMPT_COMMAND=". ${APP_ROOT}/bin/activate"
+
+SHELL ["/bin/bash", "-c"]
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
-RUN python3.10 -m pip install habana_media_loader=="${VERSION}"."${REVISION}"
+RUN python -m pip install habana_media_loader=="${VERSION}"."${REVISION}"
 
 # SSH configuration necessary to support mpi-operator v2
 RUN mkdir -p /var/run/sshd && \
@@ -130,10 +158,11 @@ RUN mkdir -p /var/run/sshd && \
     sed -i 's/#\(ForwardAgent \).*/\1yes/g' /etc/ssh/ssh_config && \
     echo "    UserKnownHostsFile /dev/null" >> /etc/ssh/ssh_config && \
     sed -i 's/#\(StrictModes \).*/\1no/g' /etc/ssh/sshd_config && \
-    ssh-keygen -A && \
     mkdir -p /var/run/sshd && echo "/usr/sbin/sshd -p 3022" | tee -a ~/.bashrc
 
 ENV GC_KERNEL_PATH=/usr/lib/habanalabs/libtpc_kernels.so
 ENV HABANA_LOGS=/var/log/habana_logs/
 ENV HABANA_SCAL_BIN_PATH=/opt/habanalabs/engines_fw
 ENV HABANA_PLUGINS_LIB_PATH=/opt/habanalabs/habana_plugins
+
+ENTRYPOINT ["/usr/local/bin/dockerd-entrypoint.sh"]
